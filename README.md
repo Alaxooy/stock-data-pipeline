@@ -2,6 +2,9 @@
 
 A Dockerized data pipeline using Apache Airflow to automatically fetch, parse, and store stock market data from Yahoo Finance into PostgreSQL.
 
+<img width="1905" height="928" alt="stock airflow ui" src="https://github.com/user-attachments/assets/facc9ac0-fa46-465d-9fa6-5302ddd212f0" />
+
+
 ## 🎯 Features
 
 - **Automated Data Fetching**: Retrieves stock market data from Yahoo Finance API on a scheduled basis (hourly by default)
