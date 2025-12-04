@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: stocks_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/init_market_db.sql:/docker-entrypoint-initdb.d/init_market_db.sql:ro
+
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: airflow_stocks
+    depends_on:
+      - postgres
+    environment:
+      # Airflow core
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-airflow}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+
+      # Connection to stocks database (Airflow connection ID = stocks_db)
+      AIRFLOW_CONN_STOCKS_DB: ${AIRFLOW_CONN_STOCKS_DB:-postgresql+psycopg2://airflow:airflow@postgres:5432/airflow}
+
+      # Yahoo Finance configuration
+      STOCK_SYMBOLS: ${STOCK_SYMBOLS:-AAPL,MSFT,GOOGL}
+
+      # Web UI user
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_PASSWORD:-airflow}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create
+          --role Admin
+          --username ${_AIRFLOW_WWW_USER_USERNAME}
+          --password ${_AIRFLOW_WWW_USER_PASSWORD}
+          --firstname Admin
+          --lastname User
+          --email admin@example.com || true &&
+        airflow scheduler & airflow webserver
+      "
+
+volumes:
+  pgdata:
