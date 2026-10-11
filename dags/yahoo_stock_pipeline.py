@@ -1,13 +1,14 @@
 import json
 import os
+import time
 from datetime import datetime, timedelta
 
-import requests
 import psycopg2
+import requests
 from airflow import DAG
 from airflow.decorators import task
-from airflow.utils.dates import days_ago
 from airflow.hooks.base import BaseHook
+from airflow.utils.dates import days_ago
 
 
 DEFAULT_ARGS = {
@@ -21,85 +22,135 @@ DEFAULT_ARGS = {
 
 
 def get_symbols() -> str:
-    """Get comma-separated symbols from env, fallback to default."""
-    env_symbols = os.environ.get("STOCK_SYMBOLS")
-    if env_symbols:
-        return env_symbols
-    return "AAPL,MSFT,GOOGL"
+    """Return configured stock symbols, defaulting to one safe symbol."""
+    symbols = os.environ.get("STOCK_SYMBOLS")
+    return symbols if symbols else "AAPL"
+
+
+def fetch_from_twelve_data(symbol: str) -> dict:
+    """Free fallback source for local testing when Yahoo rate-limits requests."""
+    response = requests.get(
+        "https://api.twelvedata.com/quote",
+        params={"symbol": symbol.upper(), "apikey": "demo"},
+        timeout=20,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    if "symbol" not in data:
+        raise RuntimeError(f"Unexpected Twelve Data response for {symbol}: {data}")
+
+    price = data.get("close") or data.get("last") or data.get("price")
+    if price is None:
+        raise RuntimeError(f"Missing price in Twelve Data response for {symbol}: {data}")
+
+    timestamp = data.get("timestamp") or datetime.utcnow().timestamp()
+
+    return {
+        "quoteResponse": {
+            "result": [
+                {
+                    "symbol": symbol.upper(),
+                    "regularMarketPrice": float(price),
+                    "currency": data.get("currency", "USD"),
+                    "regularMarketVolume": int(data.get("volume") or 0),
+                    "regularMarketTime": int(timestamp),
+                }
+            ]
+        }
+    }
 
 
 with DAG(
     dag_id="yahoo_stock_pipeline",
     default_args=DEFAULT_ARGS,
-    description="Fetch stock data from Yahoo Finance and store in PostgreSQL",
-    schedule_interval="0 * * * *",  # hourly; change to "0 0 * * *" for daily
+    description="Fetch stock prices and store them in PostgreSQL.",
+    schedule_interval=None,
     start_date=days_ago(1),
     catchup=False,
     max_active_runs=1,
-    tags=["stocks", "yahoo", "example"],
+    tags=["stocks", "etl"],
 ) as dag:
 
     @task
-    def fetch_stock_data() -> dict:
-        """
-        Fetch JSON data from Yahoo Finance quote API.
-        Robustness:
-        - Raises on non-200 HTTP.
-        - Handles empty/invalid response.
-        """
-        symbols = get_symbols()
+    def fetch_market_data() -> dict:
+        """Fetch stock data from Yahoo first, then fall back to Twelve Data if needed."""
+        symbols = [symbol.strip() for symbol in get_symbols().split(",") if symbol.strip()]
+        if not symbols:
+            raise RuntimeError("No stock symbols configured.")
+
+        symbol = symbols[0]
         url = "https://query1.finance.yahoo.com/v7/finance/quote"
-        params = {"symbols": symbols}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+        }
+
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = requests.get(
+                    url,
+                    params={"symbols": symbol},
+                    headers=headers,
+                    timeout=20,
+                )
+
+                if response.status_code == 429:
+                    last_error = RuntimeError("Yahoo Finance rate limited the request (429).")
+                    if attempt < 2:
+                        time.sleep(10 * (attempt + 1))
+                        continue
+                    break
+
+                response.raise_for_status()
+                data = response.json()
+                if "quoteResponse" not in data or "result" not in data["quoteResponse"]:
+                    raise RuntimeError(f"Unexpected Yahoo Finance response: {data}")
+                return data
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                break
 
         try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            # This will trigger Airflow retry due to raised exception
-            raise RuntimeError(f"Error fetching Yahoo Finance data: {exc}") from exc
-
-        try:
-            data = response.json()
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Invalid JSON from Yahoo Finance: {exc}") from exc
-
-        if "quoteResponse" not in data or "result" not in data["quoteResponse"]:
-            raise RuntimeError(f"Unexpected Yahoo Finance structure: {data}")
-
-        return data
+            return fetch_from_twelve_data(symbol)
+        except Exception as exc:
+            if last_error is not None:
+                raise RuntimeError(
+                    f"Yahoo failed and fallback also failed: {last_error}; {exc}"
+                ) from exc
+            raise RuntimeError(f"Error fetching stock data: {exc}") from exc
 
     @task
-    def transform_stock_data(raw_data: dict) -> list:
-        """
-        Extract relevant fields safely.
-        Returns list of normalized records ready for DB load.
-        Handles missing fields gracefully by setting them to None.
-        """
+    def clean_market_data(raw_data: dict) -> list:
+        """Normalize API output into rows ready for insertion."""
         results = raw_data.get("quoteResponse", {}).get("result", [])
         if not isinstance(results, list):
-            raise RuntimeError(f"Unexpected 'result' type: {type(results)}")
+            raise RuntimeError(f"Unexpected result type: {type(results)}")
 
-        transformed = []
+        cleaned = []
         for item in results:
             try:
                 symbol = item.get("symbol")
                 price = item.get("regularMarketPrice")
                 currency = item.get("currency")
                 volume = item.get("regularMarketVolume")
-
-                # market time in seconds since epoch (if present)
                 market_time_raw = item.get("regularMarketTime")
-                if market_time_raw:
-                    market_time = datetime.utcfromtimestamp(int(market_time_raw))
-                else:
-                    # Fall back to now; keep pipeline running even if missing
-                    market_time = datetime.utcnow()
 
                 if not symbol:
-                    # Skip records without symbol, but don't fail entire DAG
                     continue
 
-                transformed.append(
+                market_time = (
+                    datetime.utcfromtimestamp(int(market_time_raw))
+                    if market_time_raw
+                    else datetime.utcnow()
+                )
+
+                cleaned.append(
                     {
                         "symbol": symbol,
                         "price": price,
@@ -110,27 +161,20 @@ with DAG(
                     }
                 )
             except Exception as exc:
-                # Defensive: log and skip bad records instead of failing all
-                # Airflow will still show this in task logs.
                 print(f"Skipping malformed record {item}: {exc}")
 
-        if not transformed:
-            raise RuntimeError("No valid records extracted from Yahoo Finance data")
+        if not cleaned:
+            raise RuntimeError("No valid records extracted from market data.")
 
-        return transformed
+        return cleaned
 
     @task
-    def load_stock_data(records: list) -> None:
-        """
-        Upsert records into PostgreSQL (market_data table).
-        Uses Airflow connection 'stocks_db' defined via AIRFLOW_CONN_STOCKS_DB env var.
-        """
+    def save_market_data(records: list) -> None:
+        """Insert records into PostgreSQL with an upsert."""
         if not records:
-            # Nothing to load; do not fail
-            print("No records to load.")
+            print("No records to save.")
             return
 
-        # Get connection from Airflow
         conn = BaseHook.get_connection("stocks_db")
         dsn = conn.get_uri().replace("postgresql+psycopg2://", "postgresql://")
 
@@ -152,17 +196,14 @@ with DAG(
                             updated_at = NOW();
                     """
 
-                    for r in records:
-                        # Convert ISO string back to datetime in DB layer
-                        r_local = dict(r)
-                        r_local["market_time"] = datetime.fromisoformat(r["market_time"])
-                        r_local["raw_json"] = json.dumps(r["raw_json"])
-                        cur.execute(upsert_sql, r_local)
+                    for row in records:
+                        record = dict(row)
+                        record["market_time"] = datetime.fromisoformat(row["market_time"])
+                        record["raw_json"] = json.dumps(row["raw_json"])
+                        cur.execute(upsert_sql, record)
         except psycopg2.Error as exc:
-            # Bubble up so Airflow can retry
             raise RuntimeError(f"Error inserting into PostgreSQL: {exc}") from exc
 
-    # Define task dependencies
-    raw = fetch_stock_data()
-    cleaned = transform_stock_data(raw)
-    load_stock_data(cleaned)
+    raw_data = fetch_market_data()
+    cleaned_data = clean_market_data(raw_data)
+    save_market_data(cleaned_data)

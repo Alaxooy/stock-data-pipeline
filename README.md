@@ -1,123 +1,117 @@
-# Stock Market Data Pipeline
+# Stock Market ETL Pipeline
 
-A Dockerized data pipeline using Apache Airflow to automatically fetch, parse, and store stock market data from Yahoo Finance into PostgreSQL.
+A small ETL project that pulls stock market data into PostgreSQL using Apache Airflow. The pipeline fetches data from a public market API, cleans it, and stores it in a database that can later be connected to tools like Tableau or Power BI.
 
-<img width="1905" height="928" alt="stock airflow ui" src="https://github.com/user-attachments/assets/facc9ac0-fa46-465d-9fa6-5302ddd212f0" />
+## Overview
 
+This project demonstrates a simple data pipeline flow:
 
-## 🎯 Features
+- API source fetches stock market data
+- Airflow orchestrates the tasks
+- Python transforms the raw response
+- PostgreSQL stores the final records
+- Tableau or BI tools can connect to the database for dashboards
 
-- **Automated Data Fetching**: Retrieves stock market data from Yahoo Finance API on a scheduled basis (hourly by default)
-- **Data Processing**: Parses JSON responses and extracts relevant stock information
-- **Database Storage**: Stores data in PostgreSQL with automatic table creation
-- **Error Handling**: Comprehensive error handling and retry logic for robustness
-- **Dockerized**: Complete setup using Docker Compose for easy deployment
-- **Environment Variables**: Secure management of credentials and configuration
+## What this project does
 
-## 📋 Prerequisites
+The DAG named `yahoo_stock_pipeline` performs three steps:
 
-- **Docker Desktop** (with WSL2 backend enabled) - [Download here](https://www.docker.com/products/docker-desktop)
-- **Git** (optional, for cloning the repository)
+1. `fetch_market_data`
+   - tries the Yahoo Finance API first
+   - falls back to Twelve Data if Yahoo rate-limits the request
+   - keeps the request lightweight and stable for local testing
 
-## 🚀 Quick Start
+2. `clean_market_data`
+   - extracts the important fields
+   - normalizes prices and timestamps
+   - drops malformed rows safely
 
-### 1. Clone or Download the Repository
+3. `save_market_data`
+   - uses PostgreSQL `INSERT ... ON CONFLICT` to upsert records
+   - stores raw JSON and normalized data in `market_data`
+
+## Project structure
+
+```text
+stock-data-pipeline/
+├── dags/
+│   └── yahoo_stock_pipeline.py
+├── sql/
+│   └── init_market_db.sql
+├── docker-compose.yml
+├── Dockerfile.airflow
+├── requirements.txt
+├── README.md
+├── setup.sh
+├── .env.example
+├── .gitignore
+└── logs/
+```
+
+## Prerequisites
+
+- Docker Desktop
+- Git
+- A browser for the Airflow UI
+
+## Quick start
+
+### 1. Clone the repository
 
 ```bash
 git clone <your-repo-url>
-cd stock-pipeline
+cd stock-data-pipeline
 ```
 
-### 2. Configure Environment Variables (Optional)
+### 2. Start Docker
 
-Edit the `.env` file to customize settings:
+Make sure Docker Desktop is running on your machine.
 
-```env
-POSTGRES_USER=airflow
-POSTGRES_PASSWORD=airflow
-POSTGRES_DB=airflow
-
-AIRFLOW_USERNAME=airflow
-AIRFLOW_PASSWORD=airflow
-
-# Comma-separated stock symbols to track
-STOCK_SYMBOLS=AAPL,MSFT,GOOGL,AMZN
-
-AIRFLOW_CONN_STOCKS_DB=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-```
-
-### 3. Start the Pipeline
+### 3. Launch the pipeline
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
-This command will:
-- Build the Airflow Docker image with required dependencies
-- Start PostgreSQL database container
-- Initialize the database and create the `market_data` table
-- Start Airflow webserver and scheduler
-- Create Airflow admin user (if not exists)
+This will start:
 
-**Note**: The first startup may take 2-3 minutes to download images and initialize.
+- PostgreSQL on port `5432`
+- Airflow on port `8080`
 
-### 4. Access Airflow Web UI
+### 4. Open Airflow UI
 
-1. Open your browser and navigate to: `http://localhost:8080`
-2. Login with credentials:
-   - **Username**: `airflow`
-   - **Password**: `airflow`
+Open:
 
-### 5. Enable and Run the DAG
-
-1. In the Airflow UI, find the `yahoo_stock_pipeline` DAG
-2. Toggle the switch on the left to **enable** the DAG (it should turn blue/green)
-3. Click the **play button (▶)** to trigger a manual run
-4. Click on the DAG name to view the Graph View and monitor task execution
-
-## 🔧 Manual Setup (If Needed)
-
-If the Airflow user wasn't created automatically during startup, you can create it manually:
-
-```bash
-# Create Airflow admin user
-docker exec -it airflow_stocks airflow users create \
-  --role Admin \
-  --username airflow \
-  --password airflow \
-  --firstname Admin \
-  --lastname User \
-  --email admin@example.com
-
-# Enable the DAG (if needed)
-docker exec -it airflow_stocks airflow dags unpause yahoo_stock_pipeline
+```text
+http://localhost:8080
 ```
 
-## 📊 Pipeline Architecture
+Login with:
 
-The pipeline consists of three main tasks:
+- Username: `airflow`
+- Password: `airflow`
 
-1. **`fetch_stock_data`**: Fetches JSON data from Yahoo Finance API
-   - Uses `requests` library with timeout handling
-   - Validates HTTP response status
-   - Handles network errors with retries
+### 5. Trigger the DAG
 
-2. **`transform_stock_data`**: Parses and extracts relevant fields
-   - Extracts: symbol, price, currency, volume, market_time
-   - Handles missing fields gracefully (sets to None)
-   - Skips malformed records without failing entire pipeline
+In the Airflow UI:
 
-3. **`load_stock_data`**: Stores data in PostgreSQL
-   - Uses upsert logic (INSERT ... ON CONFLICT UPDATE)
-   - Prevents duplicate entries
-   - Stores both normalized data and raw JSON
+1. Find `yahoo_stock_pipeline`
+2. Click the play button to run it manually
+3. Watch the tasks complete
 
-## 🗄️ Database Schema
+## Default credentials
 
-The `market_data` table structure:
+```text
+Username: airflow
+Password: airflow
+```
+
+## Database schema
+
+The database table is created by `sql/init_market_db.sql`:
 
 ```sql
-CREATE TABLE market_data (
+CREATE TABLE IF NOT EXISTS market_data (
     symbol        TEXT        NOT NULL,
     price         NUMERIC     NULL,
     currency      TEXT        NULL,
@@ -128,130 +122,111 @@ CREATE TABLE market_data (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT market_data_pk PRIMARY KEY (symbol, market_time)
 );
+
+CREATE INDEX IF NOT EXISTS idx_market_data_time
+    ON market_data (market_time DESC);
 ```
 
-## 🔍 Querying the Data
+## Querying data
 
-### Using Docker
+### Check rows from PostgreSQL
 
 ```bash
-# Connect to PostgreSQL and query data
-docker exec -it stocks_postgres psql -U airflow -d airflow -c \
-  "SELECT * FROM market_data ORDER BY created_at DESC LIMIT 10;"
+docker exec -it stocks_postgres psql -U airflow -d airflow -c "SELECT * FROM market_data ORDER BY created_at DESC LIMIT 10;"
 ```
 
-### Using PostgreSQL Client
+### Example query
 
-Connect with:
-- **Host**: `localhost`
-- **Port**: `5432`
-- **Database**: `airflow`
-- **Username**: `airflow`
-- **Password**: `airflow`
-
-Example query:
 ```sql
-SELECT symbol, price, currency, volume, market_time 
-FROM market_data 
-WHERE symbol = 'AAPL' 
-ORDER BY market_time DESC 
+SELECT symbol, price, currency, volume, market_time
+FROM market_data
+WHERE symbol = 'AAPL'
+ORDER BY market_time DESC
 LIMIT 10;
 ```
 
-## ⚙️ Configuration
+## Export data to CSV
+
+```bash
+docker exec -it stocks_postgres psql -U airflow -d airflow -c "\COPY (SELECT * FROM market_data ORDER BY created_at DESC) TO '/tmp/market_data.csv' WITH CSV HEADER"
+docker cp stocks_postgres:/tmp/market_data.csv .
+```
+
+This creates a file called `market_data.csv` in your project folder.
+
+## Tableau / BI use
+
+This project is designed to feed a dashboard tool. The `market_data` table is ready to use as a data source in Tableau, Power BI, or Python analysis notebooks.
+
+Typical Tableau connection settings:
+
+- Host: `localhost`
+- Port: `5432`
+- Database: `airflow`
+- Username: `airflow`
+- Password: `airflow`
+
+## Configuration
+
+### Environment variables
+
+You can set these in a `.env` file if needed:
+
+```env
+POSTGRES_USER=airflow
+POSTGRES_PASSWORD=airflow
+POSTGRES_DB=airflow
+
+AIRFLOW_USERNAME=airflow
+AIRFLOW_PASSWORD=airflow
+STOCK_SYMBOLS=AAPL
+```
 
 ### Schedule
 
-The DAG runs **hourly** by default. To change the schedule, edit `dags/yahoo_stock_pipeline.py`:
+The DAG is currently manual-only for stability during local testing:
 
 ```python
-schedule_interval="0 * * * *",  # Hourly
-# schedule_interval="0 0 * * *",  # Daily
-# schedule_interval=None,  # Manual trigger only
+schedule_interval=None
 ```
 
-### Stock Symbols
-
-Modify the `STOCK_SYMBOLS` environment variable in `.env`:
-
-```env
-STOCK_SYMBOLS=AAPL,MSFT,GOOGL,AMZN,TSLA,NVDA
-```
-
-### Retry Configuration
-
-The pipeline includes automatic retries:
-- **Retries**: 3 attempts
-- **Retry Delay**: 5 minutes between retries
-
-Configure in `dags/yahoo_stock_pipeline.py`:
+If you want hourly runs later, change it to:
 
 ```python
-DEFAULT_ARGS = {
-    "retries": 3,
-    "retry_delay": timedelta(minutes=5),
-}
+schedule_interval="0 * * * *"
 ```
 
-## 🛠️ Project Structure
+## Troubleshooting
 
+### Invalid login
+
+Use:
+
+- Username: `airflow`
+- Password: `airflow`
+
+If login still fails, recreate the container volume:
+
+```bash
+docker compose down -v
+docker compose up --build -d
 ```
-stock-pipeline/
-├── docker-compose.yml          # Docker Compose configuration
-├── Dockerfile.airflow          # Airflow Docker image definition
-├── requirements.txt            # Python dependencies
-├── .env                        # Environment variables (not in git)
-├── README.md                   # This file
-├── dags/
-│   └── yahoo_stock_pipeline.py # Main Airflow DAG
-├── sql/
-│   └── init_market_db.sql      # Database initialization script
-├── logs/                       # Airflow logs (created automatically)
-└── plugins/                    # Airflow plugins (empty by default)
-```
 
-## 🐛 Troubleshooting
+### Yahoo rate limiting
 
-### Airflow UI not accessible
+This project tries Yahoo first, then falls back to Twelve Data. If you want a more stable production setup, use a paid API key or switch to a different provider.
 
-- Ensure Docker containers are running: `docker ps`
-- Check if port 8080 is already in use
-- View logs: `docker logs airflow_stocks`
+### DAG fails
 
-### DAG not appearing
+Check the task logs in the Airflow UI for the exact error and verify that Docker containers are still running.
 
-- Check for import errors: `docker exec -it airflow_stocks airflow dags list-import-errors`
-- Verify DAG file exists: `docker exec -it airflow_stocks ls -la /opt/airflow/dags/`
-- Check Airflow logs for errors
+## Notes
 
-### Database connection errors
+- This is an ETL starter project, not a full trading platform.
+- It is built to capture market data into PostgreSQL for later analytics.
+- The database is the main output of the pipeline.
 
-- Ensure PostgreSQL container is running: `docker ps | grep postgres`
-- Verify connection string in `.env` file
-- Check PostgreSQL logs: `docker logs stocks_postgres`
+## License
 
-### Task failures
-
-- View task logs in Airflow UI (click on failed task → Log)
-- Check for API rate limiting (Yahoo Finance may throttle requests)
-- Verify network connectivity from container
-
-## 🔒 Security Notes
-
-- **Never commit** `.env` file to version control
-- Change default passwords in production
-- Use secrets management (e.g., Docker Secrets, AWS Secrets Manager) for production
-- Restrict database access in production environments
-
-## 📝 License
-
-This project is provided as-is for educational and demonstration purposes.
-
-## 🤝 Contributing
-
-Feel free to submit issues or pull requests for improvements!
-
-## 📧 Support
-
-For issues or questions, please open an issue in the repository.
+This project is for educational and personal use.
 
