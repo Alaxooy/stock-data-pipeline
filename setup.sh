@@ -57,7 +57,7 @@ fi
 # Enable the DAG
 echo ""
 echo "📋 Enabling DAG..."
-docker exec airflow_stocks airflow dags unpause yahoo_stock_pipeline || echo "⚠️  DAG may already be enabled"
+docker exec airflow_stocks airflow dags unpause stock_market_pipeline || echo "⚠️  DAG may already be enabled"
 
 echo ""
 echo "✅ Setup complete!"

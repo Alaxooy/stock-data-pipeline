@@ -14,12 +14,11 @@ This project demonstrates a simple data pipeline flow:
 
 ## What this project does
 
-The DAG named `yahoo_stock_pipeline` performs three steps:
+The DAG named `stock_market_pipeline` performs three steps:
 
 1. `fetch_market_data`
-   - tries the Yahoo Finance API first
-   - falls back to Twelve Data if Yahoo rate-limits the request
-   - keeps the request lightweight and stable for local testing
+   - fetches the configured symbol from Twelve Data
+   - uses the Twelve Data demo key for local testing
 
 2. `clean_market_data`
    - extracts the important fields
@@ -35,7 +34,7 @@ The DAG named `yahoo_stock_pipeline` performs three steps:
 ```text
 stock-data-pipeline/
 ├── dags/
-│   └── yahoo_stock_pipeline.py
+│   └── stock_market_pipeline.py
 ├── sql/
 │   └── init_market_db.sql
 ├── docker-compose.yml
@@ -95,7 +94,7 @@ Login with:
 
 In the Airflow UI:
 
-1. Find `yahoo_stock_pipeline`
+1. Find `stock_market_pipeline`
 2. Click the play button to run it manually
 3. Watch the tasks complete
 
@@ -212,9 +211,9 @@ docker compose down -v
 docker compose up --build -d
 ```
 
-### Yahoo rate limiting
+### Twelve Data API errors
 
-This project tries Yahoo first, then falls back to Twelve Data. If you want a more stable production setup, use a paid API key or switch to a different provider.
+The local setup uses Twelve Data's demo key, which may have symbol, quota, or availability limits. For regular use, provide a Twelve Data API key and update the `apikey` value in the DAG.
 
 ### DAG fails
 

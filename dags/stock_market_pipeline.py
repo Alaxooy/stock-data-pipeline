@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from datetime import datetime, timedelta
 
 import psycopg2
@@ -28,7 +27,7 @@ def get_symbols() -> str:
 
 
 def fetch_from_twelve_data(symbol: str) -> dict:
-    """Free fallback source for local testing when Yahoo rate-limits requests."""
+    """Fetch a stock quote from Twelve Data."""
     response = requests.get(
         "https://api.twelvedata.com/quote",
         params={"symbol": symbol.upper(), "apikey": "demo"},
@@ -63,7 +62,7 @@ def fetch_from_twelve_data(symbol: str) -> dict:
 
 
 with DAG(
-    dag_id="yahoo_stock_pipeline",
+    dag_id="stock_market_pipeline",
     default_args=DEFAULT_ARGS,
     description="Fetch stock prices and store them in PostgreSQL.",
     schedule_interval=None,
@@ -75,55 +74,16 @@ with DAG(
 
     @task
     def fetch_market_data() -> dict:
-        """Fetch stock data from Yahoo first, then fall back to Twelve Data if needed."""
+        """Fetch stock data from Twelve Data."""
         symbols = [symbol.strip() for symbol in get_symbols().split(",") if symbol.strip()]
         if not symbols:
             raise RuntimeError("No stock symbols configured.")
 
         symbol = symbols[0]
-        url = "https://query1.finance.yahoo.com/v7/finance/quote"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
-        }
-
-        last_error = None
-        for attempt in range(3):
-            try:
-                response = requests.get(
-                    url,
-                    params={"symbols": symbol},
-                    headers=headers,
-                    timeout=20,
-                )
-
-                if response.status_code == 429:
-                    last_error = RuntimeError("Yahoo Finance rate limited the request (429).")
-                    if attempt < 2:
-                        time.sleep(10 * (attempt + 1))
-                        continue
-                    break
-
-                response.raise_for_status()
-                data = response.json()
-                if "quoteResponse" not in data or "result" not in data["quoteResponse"]:
-                    raise RuntimeError(f"Unexpected Yahoo Finance response: {data}")
-                return data
-            except requests.RequestException as exc:
-                last_error = exc
-                if attempt < 2:
-                    time.sleep(5 * (attempt + 1))
-                    continue
-                break
-
         try:
             return fetch_from_twelve_data(symbol)
         except Exception as exc:
-            if last_error is not None:
-                raise RuntimeError(
-                    f"Yahoo failed and fallback also failed: {last_error}; {exc}"
-                ) from exc
-            raise RuntimeError(f"Error fetching stock data: {exc}") from exc
+            raise RuntimeError(f"Twelve Data fetch failed for {symbol}: {exc}") from exc
 
     @task
     def clean_market_data(raw_data: dict) -> list:

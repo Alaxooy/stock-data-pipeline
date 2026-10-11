@@ -60,7 +60,7 @@ if ($userCheck) {
 # Enable the DAG
 Write-Host ""
 Write-Host "📋 Enabling DAG..." -ForegroundColor Cyan
-docker exec airflow_stocks airflow dags unpause yahoo_stock_pipeline 2>$null
+docker exec airflow_stocks airflow dags unpause stock_market_pipeline 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "⚠️  DAG may already be enabled" -ForegroundColor Yellow
 }
